@@ -23,7 +23,9 @@ import java.time._
 import java.time.temporal.{ChronoField, ChronoUnit, IsoFields}
 import java.util.{Locale, TimeZone}
 import java.util.concurrent.TimeUnit._
+import javax.xml.bind.DatatypeConverter
 
+import scala.annotation.tailrec
 import scala.util.control.NonFatal
 
 import sun.util.calendar.ZoneInfo
@@ -32,6 +34,9 @@ import org.apache.spark.sql.catalyst.util.DateTimeConstants._
 import org.apache.spark.sql.catalyst.util.RebaseDateTime._
 import org.apache.spark.sql.types.Decimal
 import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
+
+
+
 
 /**
  * Helper functions for converting between internal and external date and time representations.
@@ -51,6 +56,7 @@ object DateTimeUtils {
   val TIMEZONE_OPTION = "timeZone"
 
   def getZoneId(timeZoneId: String): ZoneId = ZoneId.of(timeZoneId, ZoneId.SHORT_IDS)
+
   def getTimeZone(timeZoneId: String): TimeZone = TimeZone.getTimeZone(getZoneId(timeZoneId))
 
   /**
@@ -76,9 +82,9 @@ object DateTimeUtils {
    * any given time zone and UTC time zone.
    *
    * Note: The date is shifted by the offset of the default JVM time zone for backward compatibility
-   *       with Spark 2.4 and earlier versions. The goal of the shift is to get a local date derived
-   *       from the number of days that has the same date fields (year, month, day) as the original
-   *       `date` at the default JVM time zone.
+   * with Spark 2.4 and earlier versions. The goal of the shift is to get a local date derived
+   * from the number of days that has the same date fields (year, month, day) as the original
+   * `date` at the default JVM time zone.
    *
    * @param date It represents a specific instant in time based on the hybrid calendar which
    *             combines Julian and Gregorian calendars.
@@ -100,7 +106,7 @@ object DateTimeUtils {
    * at the default JVM time zone as the input `daysSinceEpoch` in Proleptic Gregorian calendar.
    *
    * Note: The date is shifted by the offset of the default JVM time zone for backward compatibility
-   *       with Spark 2.4 and earlier versions.
+   * with Spark 2.4 and earlier versions.
    *
    * @param days The number of days since 1970-01-01 in Proleptic Gregorian calendar.
    * @return A local date in the hybrid calendar as `java.sql.Date` from number of days since epoch.
@@ -203,6 +209,7 @@ object DateTimeUtils {
   }
 
   private final val gmtUtf8 = UTF8String.fromString("GMT")
+
   // The method is called by JSON/CSV parser to clean up the legacy timestamp string by removing
   // the "GMT" string. For example, it returns 2000-01-01T00:00+01:00 for 2000-01-01T00:00GMT+01:00.
   def cleanLegacyTimestampStr(s: UTF8String): UTF8String = s.replace(gmtUtf8, UTF8String.EMPTY_UTF8)
@@ -304,7 +311,7 @@ object DateTimeUtils {
             tz = Some(new String(bytes, j, bytes.length - j))
             j = bytes.length - 1
           }
-          if (i == 6  && b != '.') {
+          if (i == 6 && b != '.') {
             i += 1
           }
         } else {
@@ -361,6 +368,26 @@ object DateTimeUtils {
       Some(instantToMicros(instant))
     } catch {
       case NonFatal(_) => None
+    }
+  }
+
+  @tailrec
+  def stringToTime(s: String): java.util.Date = {
+    val indexOfGMT = s.indexOf("GMT")
+    if (indexOfGMT != -1) {
+      // ISO8601 with a weird time zone specifier (2000-01-01T00:00GMT+01:00)
+      val s0 = s.substring(0, indexOfGMT)
+      val s1 = s.substring(indexOfGMT + 3)
+      // Mapped to 2000-01-01T00:00+01:00
+      stringToTime(s0 + s1)
+    } else if (!s.contains('T')) {
+      if (s.contains(' ')) {
+        Timestamp.valueOf(s)
+      } else {
+        Date.valueOf(s)
+      }
+    } else {
+      DatatypeConverter.parseDateTime(s).getTime()
     }
   }
 
@@ -556,6 +583,7 @@ object DateTimeUtils {
 
   /**
    * Adds an year-month interval to a date represented as days since 1970-01-01.
+   *
    * @return a date value, expressed in days since 1970-01-01.
    */
   def dateAddMonths(days: Int, months: Int): Int = {
@@ -565,14 +593,15 @@ object DateTimeUtils {
   /**
    * Adds a full interval (months, days, microseconds) a timestamp represented as the number of
    * microseconds since 1970-01-01 00:00:00Z.
+   *
    * @return A timestamp value, expressed in microseconds since 1970-01-01 00:00:00Z.
    */
   def timestampAddInterval(
-      start: Long,
-      months: Int,
-      days: Int,
-      microseconds: Long,
-      zoneId: ZoneId): Long = {
+                            start: Long,
+                            months: Int,
+                            days: Int,
+                            microseconds: Long,
+                            zoneId: ZoneId): Long = {
     val resultTimestamp = microsToInstant(start)
       .atZone(zoneId)
       .plusMonths(months)
@@ -583,14 +612,14 @@ object DateTimeUtils {
 
   /**
    * Adds the interval's months and days to a date expressed as days since the epoch.
-   * @return A date value, expressed in days since 1970-01-01.
    *
-   * @throws DateTimeException if the result exceeds the supported date range
+   * @return A date value, expressed in days since 1970-01-01.
+   * @throws DateTimeException        if the result exceeds the supported date range
    * @throws IllegalArgumentException if the interval has `microseconds` part
    */
   def dateAddInterval(
-     start: Int,
-     interval: CalendarInterval): Int = {
+                       start: Int,
+                       interval: CalendarInterval): Int = {
     require(interval.microseconds == 0,
       "Cannot add hours, minutes or seconds, milliseconds, microseconds to a date")
     val ld = daysToLocalDate(start).plusMonths(interval.months).plusDays(interval.days)
@@ -617,10 +646,10 @@ object DateTimeUtils {
    * The result is rounded to 8 decimal places if `roundOff` is set to true.
    */
   def monthsBetween(
-      micros1: Long,
-      micros2: Long,
-      roundOff: Boolean,
-      zoneId: ZoneId): Double = {
+                     micros1: Long,
+                     micros2: Long,
+                     roundOff: Boolean,
+                     zoneId: ZoneId): Double = {
     val date1 = microsToDays(micros1, zoneId)
     val date2 = microsToDays(micros2, zoneId)
     val (year1, monthInYear1, dayInMonth1, daysToMonthEnd1) = splitDate(date1)
@@ -822,7 +851,7 @@ object DateTimeUtils {
   /**
    * Extracts special values from an input string ignoring case.
    *
-   * @param input A trimmed string
+   * @param input  A trimmed string
    * @param zoneId Zone identifier used to get the current date.
    * @return Some special value in lower case or None.
    */
@@ -852,7 +881,7 @@ object DateTimeUtils {
   /**
    * Converts notational shorthands that are converted to ordinary timestamps.
    *
-   * @param input A trimmed string
+   * @param input  A trimmed string
    * @param zoneId Zone identifier used to get the current date.
    * @return Some of microseconds since the epoch if the conversion completed
    *         successfully otherwise None.
@@ -879,7 +908,7 @@ object DateTimeUtils {
   /**
    * Converts notational shorthands that are converted to ordinary dates.
    *
-   * @param input A trimmed string
+   * @param input  A trimmed string
    * @param zoneId Zone identifier used to get the current date.
    * @return Some of days since the epoch if the conversion completed successfully otherwise None.
    */
@@ -904,7 +933,7 @@ object DateTimeUtils {
   /**
    * Subtracts two dates expressed as days since 1970-01-01.
    *
-   * @param endDay The end date, exclusive
+   * @param endDay   The end date, exclusive
    * @param startDay The start date, inclusive
    * @return An interval between two dates. The interval can be negative
    *         if the end date is before the start date.
